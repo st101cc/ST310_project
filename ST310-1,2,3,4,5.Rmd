@@ -1,0 +1,671 @@
+---
+title: "ST310 Project"
+date: "2025-04-11"
+output: html_document
+---
+
+```{r setup1, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+Load libraries:
+```{r}
+library(caret)
+library(ggplot2)
+library(xgboost)
+library(caret)
+library(Matrix)
+library(ROCR)
+library(tidymodels)
+library(dplyr)
+library(yardstick)
+library(smotefamily)
+library(pROC)
+library(lightgbm)
+```
+
+Load data:
+```{r}
+data <- read.csv("data/drug_consumption.csv")
+
+# Keep only selected drug variables along with the original features
+selected_vars <- c("age", "gender", "education", "country", "ethnicity", "nscore", 
+                   "escore", "oscore","ascore", "cscore", "impuslive", "ss", 
+                   "alcohol", "choc", "cannabis", "caff", "nicotine", "heroin")
+drug_data <-  data[, selected_vars]
+
+# Rename 'impuslive' to 'impulsive'
+colnames(drug_data)[colnames(drug_data) == "impuslive"] <- "impulsive"
+
+head(drug_data)
+table(drug_data$heroin)
+```
+
+Check data structure:
+```{r}
+str(drug_data)
+```
+
+### Initial data manipulation
+
+Convert all drug variables into ordered factor (0–6):
+```{r}
+drug_data2 <- drug_data
+drug_vars <- c("alcohol", "choc", "cannabis", "caff", "nicotine", "heroin")
+
+# Convert all to ordered numeric levels
+for (var in drug_vars) {
+  drug_data2[[paste0(var, "_level")]] <- as.numeric(factor(drug_data2[[var]], 
+                                                           levels = c("CL0", "CL1", "CL2", "CL3", "CL4", "CL5", "CL6"))) - 1
+}
+
+# Remove the original categorical drug columns
+drug_data2 <- drug_data2[ , !(names(drug_data2) %in% drug_vars)]
+```
+
+Convert heroin to binary factor: 
+- 0 = no use (CL0)
+- 1 = used (CL1 to CL6)
+```{r}
+# Create binary target: 0 = no use, 1 = used
+drug_data2$heroin_use <- ifelse(drug_data2$heroin_level > 0, 1, 0)
+drug_data2$heroin_use <- as.factor(drug_data2$heroin_use)
+
+# Remove heroin_level
+drug_data2$heroin_level <- NULL
+
+head(drug_data2)
+```
+
+Split data into training and testing set:
+```{r}
+set.seed(38036)
+train_indices <- createDataPartition(drug_data2$heroin_use, p = 0.8, list = FALSE)
+
+train_data2 <- drug_data2[train_indices, ]
+test_data2  <- drug_data2[-train_indices, ]
+
+head(train_data2)
+```
+
+### Baseline model: logistic regression
+1. At least one model must be simple enough to consider as a baseline for comparison to the more sophisticated models. Regression models or nearest neighbors methods, based on only a few predictors, are good candidates for baseline methods.
+
+Logistic regression model:
+```{r}
+base_model <- glm(heroin_use ~ . , data = train_data2, family = binomial)
+summary(base_model)
+```
+
+The result from logistic regression indicate that the most significant predictors of heroin use are age, country, nscore (neuroticism), oscore (openness to experience), ss (sensation seeking), as well as alcohol level and nicotine level. This finding is consistent with behavioral expectations: individuals who are younger, more emotionally reactive, open to new experiences, and exhibit higher levels of sensation seeking are more inclined to experiment with substances like heroin. Additionally, the use of other substances such as alcohol and nicotine may serve as gateways, reflecting broader patterns of drug experimentation and increased risk tolerance.
+
+Compute accuracy:
+```{r}
+# Get predicted probabilities
+pred_probs <- predict(base_model, newdata = test_data2, type = "response")
+
+# Convert to class prediction (threshold = 0.5)
+pred_class <- ifelse(pred_probs > 0.5, 1, 0)
+
+# Accuracy
+base_accuracy <- mean(pred_class == test_data2$heroin_use)
+cat("Logistic Regression Accuracy:", round(base_accuracy, 3), "\n")
+```
+
+Confusion matrix:
+```{r}
+# Convert to factors for confusionMatrix function
+pred_class <- factor(pred_class, levels = c(0, 1))
+actual_class <- factor(test_data2$heroin_use, levels = c(0, 1))
+
+# Confusion matrix
+cm <- confusionMatrix(pred_class, actual_class, positive = "1")
+print(cm)
+
+# Plot confusion matrix
+cm_table <- as.data.frame(cm$table)
+colnames(cm_table) <- c("Predicted", "Actual", "Freq")
+
+ggplot(data = cm_table, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 6) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix", x = "Actual", y = "Predicted") +
+  theme_minimal()
+```
+
+Compute ROC:
+```{r}
+true_labels <- as.numeric(as.character(test_data2$heroin_use))
+roc_obj <- roc(response = true_labels, predictor = pred_probs)
+
+# Print auc
+log_auc <- auc(roc_obj)
+print(log_auc)
+
+# Plot ROC curve
+plot(roc_obj, main = "ROC Curve - Logistic Regression", col = "blue")
+```
+The model's AUC is 0.776, indicating that there is a moderate 77.6% chance that the model ranks a random positive case (heroin user) higher than a random negative case (non-user). 
+
+The baseline model has an overall accuracy of 83%. However, it performs poorly in identifying heroin users, correctly detecting only 5 out of 56 actual cases. This likely results from class imbalance, where the model becomes biased toward predicting the majority class (non-users) and leads to a high number of false negatives.  Further models can be explored to reduce the false negative rate and improve the model's ability to detect actual heroin users.
+
+### Custom Gradient Descent Model (Softmax Regression)
+2. At least one model should be fit using your own implementation of gradient descent. The only restrictions on this model are that the gradient of the loss function should not be a constant. You are free to use a simple model and a simple loss function to make the derivation and computation manageable.
+
+To implement a model using own gradient descent, I developed a multiclass softmax regression model to predict heroin comsumption levels (CL0 to CL6). This model uses the cross-entropy loss function, and the gradient was derived with respect to model weights. The implementation involved one-hot encoding the outcome variable and using a custom softmax function to compute class probabilities. I manually performed gradient descent over 500 iterations with a learning rate of 0.05. This model achieved an accuracy of 85.8% on the testing set.
+
+Convert all drug variables into ordered factor (0–6):
+```{r}
+drug_data2 <- drug_data
+drug_vars <- c("alcohol", "choc", "cannabis", "caff", "nicotine", "heroin")
+
+# Convert all to ordered numeric levels
+for (var in drug_vars) {
+  drug_data2[[paste0(var, "_level")]] <- as.numeric(factor(drug_data2[[var]], 
+                                                           levels = c("CL0", "CL1", "CL2", "CL3", "CL4", "CL5", "CL6"))) - 1
+}
+```
+
+Split data into training and testing set:
+```{r}
+set.seed(123)
+train_indices <- createDataPartition(drug_data2$heroin, p = 0.8, list = FALSE)
+
+train_data2 <- drug_data2[train_indices, ]
+test_data2  <- drug_data2[-train_indices, ]
+```
+
+Define functions:
+```{r}
+# Softmax function:
+softmax <- function(z) {
+  exp_z <- exp(z - apply(z, 1, max))
+  exp_z / rowSums(exp_z)
+}
+
+# One-hot encode the outcome variable - heroin: 
+one_hot <- function(y, num_classes) {
+  Y <- matrix(0, nrow = length(y), ncol = num_classes)
+  Y[cbind(1:length(y), y + 1)] <- 1
+  return(Y)
+}
+
+# Cross-entropy loss:
+compute_loss <- function(X, Y, weights) {
+  logits <- X %*% weights
+  probs <- softmax(logits)
+  -sum(Y * log(probs + 1e-10)) / nrow(X)
+}
+
+# Gradient of loss:
+compute_gradient <- function(X, Y, weights) {
+  logits <- X %*% weights
+  probs <- softmax(logits)
+  grad <- t(X) %*% (probs - Y) / nrow(X)
+  return(grad)
+}
+```
+
+Define Gradient Descent function:
+```{r}
+gradient_descent_softmax <- function(X, y, num_classes, lr = 0.05, n_iter = 500) {
+  num_samples <- nrow(X)
+  num_features <- ncol(X)
+  Y <- one_hot(y, num_classes)
+  weights <- matrix(0, nrow = num_features, ncol = num_classes)
+
+  for (i in 1:n_iter) {
+    grad <- compute_gradient(X, Y, weights)
+    weights <- weights - lr * grad
+    if (i %% 50 == 0) {
+      loss <- compute_loss(X, Y, weights)
+      cat("Iteration:", i, "Loss:", loss, "\n")
+    }
+  }
+  return(weights)
+}
+```
+
+Prepare Data & Train the Model:
+```{r}
+# Select all numeric variables 
+predictor_vars <- c("age", "gender", "education", "country", "ethnicity",
+                    "nscore", "escore", "oscore", "ascore", "cscore",
+                    "impulsive", "ss", "alcohol_level", "choc_level", 
+                    "cannabis_level", "caff_level", "nicotine_level")
+
+# Design matrix for training
+X_train <- as.matrix(train_data2[, predictor_vars])
+X_train <- scale(X_train)
+X_train <- cbind(1, X_train)
+
+y_train <- train_data2$heroin_level
+num_classes <- length(unique(y_train))
+
+# Train the model
+weights_trained <- gradient_descent_softmax(X_train, y_train, num_classes)
+```
+
+Evaluate on Test and Train Data:
+```{r}
+# ==== Test Data ====
+X_test <- as.matrix(test_data2[, predictor_vars])
+X_test <- scale(X_test)
+X_test <- cbind(1, X_test)
+
+y_test <- test_data2$heroin_level
+
+logits_test <- X_test %*% weights_trained
+probs_test <- softmax(logits_test)
+predictions_test <- max.col(probs_test) - 1 
+
+test_accuracy <- mean(predictions_test == y_test)
+cat("Gradient Descent Accuracy (Test Set):", round(test_accuracy, 3), "\n")
+
+# ==== Train Data ====
+X_train <- as.matrix(train_data2[, predictor_vars])
+X_train <- scale(X_train)
+X_train <- cbind(1, X_train)
+
+y_train <- train_data2$heroin_level
+
+logits_train <- X_train %*% weights_trained
+probs_train <- softmax(logits_train)
+predictions_train <- max.col(probs_train) - 1 
+
+train_accuracy <- mean(predictions_train == y_train)
+cat("Gradient Descent Accuracy (Train Set):", round(train_accuracy, 3), "\n")
+```
+
+```{r}
+# Create a confusion matrix as a dataframe
+conf_mat_df <- table(Predicted = predictions_test, Actual = y_test) %>%
+  as.data.frame()
+
+# Convert levels to factors
+conf_mat_df$Predicted <- factor(conf_mat_df$Predicted, levels = 0:6, labels = paste0("CL", 0:6))
+conf_mat_df$Actual <- factor(conf_mat_df$Actual, levels = 0:6, labels = paste0("CL", 0:6))
+
+# Heatmap plot
+ggplot(conf_mat_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 4) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix: Softmax Regression (Gradient Descent)",
+       x = "Heroin Comsumption Level", y = "Predicted Level", fill = "Count") +
+  theme_minimal()
+```
+
+### Interpretable Model: Decision Tree
+3. At least one non-baseline model must be (relatively) interpretable. For this model you should write a brief sub-section including your interpretation of the results. You could compare to a baseline model on both predictive accuracy and (in)consistency of interpretations.
+
+To ensure interpretability, a Decision Tree model was implemented to classify individuals into categories of heroin use (CL0 to CL6) with CL0 (Never Used) being the most common outcome. The tree was trained using demographic variables (e.g. age, gender, education, country, ethnicity), personality traits (e.g. NEO-FFI-R scores, impulsiveness, and sensation-seeking), and usage patterns of other drugs (e.g. alcohol, nicotine, cannabis).
+
+The **root split** is made on the variable `country` at the threshold of −1.3. This suggests that geographical location is the most important predictor of heroin usage levels. For instance, individuals living in countries with a `country` score above –1.3 (e.g. UK and Canada) are more likely to be classified as **CL0** (never used heroin). 
+
+The left subtree reveals that lower levels of **nicotine** and **cannabis** consumption further predict non-use (CL0), especially when accompanied by lower **alcohol** usage and higher **conscientiousness (cscore)**. On the other hand, lower **agreeableness** (ascore < −2.2) and higher **sensation seeing** (ss >= 1) increase the likelihood of being categorized in a higher comsuption level. 
+
+**Age** is also a significant predictor. For example, younger participants (age < 0.2, corresponding to the 18–34 yeasrs old range) are more likely to be routed toward higher-risk heroin use categories (CL3, CL4), whereas older individuals tend to stay in CL0.
+
+Moreover, **education** emerges as a key predictor in the deeper levels of the tree. Individuals with lower **education** (education < −1.5, e.g., individuals left school at or before age 16 ) tend to classify into non-CL0 categories, such as CL1 or even CL4.
+
+The **variable importance** also supports `country`, `age`, `nicotine_CL6`, and `cannabis_CL6` were the most influential variables, indicating that both geographical and behavioral patterns play significant roles in heroin consumption prediction. Among personality traits, **neuroticism (nscore)**, **agreeableness (ascore)**, and **impulsiveness** contributed moderately.
+
+Compared to the baseline model, 
+
+In conclusion, the Decision Tree serves as a relatively interpretable model, clearly outlining how specific behavioral and demographic factors influence heroin consumption classification.
+
+```{r}
+# Factor all drug variables:
+drug_vars <- c("alcohol", "choc", "cannabis", "caff", "nicotine", "heroin")
+
+drug_data[drug_vars] <- lapply(drug_data[drug_vars], function(x) {
+  factor(x, levels = paste0("CL", 0:6))
+})
+
+# Split data into training and testing set:
+set.seed(123)
+train_indices <- createDataPartition(drug_data$heroin, p = 0.8, list = FALSE)
+
+train_data <- drug_data[train_indices, ]
+test_data  <- drug_data[-train_indices, ]
+```
+
+#### Build Decision Tree:
+```{r}
+# Data Recipe
+data_recipe <- recipe(heroin ~ ., data = train_data) %>%
+  step_dummy(all_nominal_predictors(), -all_outcomes()) %>%
+  step_normalize(all_numeric_predictors())
+
+# Define decision tree model
+tree_spec <- decision_tree(
+  cost_complexity = 0.001,  
+  min_n = 10,               
+  tree_depth = 5           
+) %>%
+  set_engine("rpart", model = TRUE) %>%
+  set_mode("classification")
+
+# Create workflow
+tree_workflow <- workflow() %>%
+  add_recipe(data_recipe) %>%
+  add_model(tree_spec)
+
+# Fit model to training data
+tree_fit <- fit(tree_workflow, data = train_data)
+
+# Predict on test data and get test accuracy
+tree_preds_test <- predict(tree_fit, new_data = test_data) %>%
+  bind_cols(test_data)
+
+# Get training accuracy
+tree_preds_train <- predict(tree_fit, new_data = train_data) %>%
+  bind_cols(train_data)
+
+# Define the metric set
+class_metrics <- metric_set(yardstick::accuracy)
+
+# Evaluate test accuracy
+test_accuracy <- tree_preds_test %>%
+  class_metrics(truth = heroin, estimate = .pred_class)
+
+# Evaluate train accuracy
+train_accuracy <- tree_preds_train %>%
+  class_metrics(truth = heroin, estimate = .pred_class)
+
+# Print accuracies
+cat("Decision Tree Accuracy (Test Set):", round(test_accuracy$.estimate, 3), "\n")
+cat("Decision Tree Accuracy (Train Set):", round(train_accuracy$.estimate, 3), "\n")
+```
+
+```{r}
+library(rpart.plot)
+
+fitted_tree <- extract_fit_engine(tree_fit)
+rpart.plot(fitted_tree, type = 4, extra = 104)
+#summary(extract_fit_engine(tree_fit))
+```
+
+```{r}
+fitted_tree <- extract_fit_engine(tree_fit)
+fitted_tree$variable.importance
+```
+
+```{r}
+library(vip)
+
+tree_fit %>%
+  extract_fit_parsnip() %>%
+  vip()
+```
+
+### High Dimensional Model: Random Forest
+4. At least one model must be (relatively) high-dimensional. If your dataset has many predictors, and the number of observations is not much larger, then for example you could fit a penalized regression model using all the predictors. If your dataset does not have many predictors you could consider models that include non-linear transformations, interaction terms, and/or local smoothing to increase the effective degrees of freedom.
+
+The high-dimensional model chosen is Random Forest. It achieved a test set accuracy of 84.6%, demonstrating strong predictive performance for the multi-class task of heroin consumption level classification. The model selected and leveraged a wide range of features, with personality traits emerging as the most influential.
+
+According to the variable importance results, the NEO-FFI-R personality dimensions—particularly agreeableness (ascore), neuroticism (nscore), conscientiousness (cscore), openness (oscore), and extraversion (escore)—were the top predictors. This suggests that personality plays a central role in differentiating heroin use levels.
+
+In addition, behavioral traits like sensation seeking (ss), impulsiveness, and education level were also significant. Among drug-use features, cannabis consumption and alcohol use were the most predictive.
+
+These results highlight the complex interplay between psychological traits, substance use behaviors, and demographic factors in understanding patterns of heroin consumption.
+
+```{r}
+# Convert drugs to numeric 0–6 levels
+drug_vars <- c("alcohol", "choc", "cannabis", "caff", "nicotine", "heroin")
+for (var in drug_vars) {
+  drug_data[[paste0(var, "_level")]] <- as.numeric(factor(drug_data[[var]], 
+                                                           levels = paste0("CL", 0:6))) - 1
+}
+
+drug_data2 <- drug_data
+predictor_vars <- c("age", "gender", "education", "country", "ethnicity",
+                    "nscore", "escore", "oscore", "ascore", "cscore",
+                    "impulsive", "ss", "alcohol_level", "choc_level", 
+                    "cannabis_level", "caff_level", "nicotine_level")
+```
+
+```{r}
+# Split Data
+set.seed(888)
+train_indices <- createDataPartition(drug_data2$heroin_level, p = 0.8, list = FALSE)
+train_data2 <- drug_data2[train_indices, ]
+test_data2  <- drug_data2[-train_indices, ]
+```
+
+#### Build Random Forest:
+```{r}
+set.seed(2025)
+rf_model <- train(
+  x = train_data2[, predictor_vars],
+  y = as.factor(train_data2$heroin_level),
+  method = "rf",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneGrid = expand.grid(mtry = c(2, 3, 4))
+)
+```
+
+```{r}
+# Evaluate Model
+pred_train <- predict(rf_model, newdata = train_data2[, predictor_vars])
+pred_test <- predict(rf_model, newdata = test_data2[, predictor_vars])
+
+train_acc <- mean(pred_train == train_data2$heroin_level)
+test_acc <- mean(pred_test == test_data2$heroin_level)
+
+cat("Random Forest Accuracy (Train Set):", round(train_acc, 3), "\n")
+cat("Random Forest Accuracy (Test Set):", round(test_acc, 3), "\n")
+```
+
+```{r}
+var_imp <- varImp(rf_model)
+print(var_imp)
+```
+
+```{r}
+plot(var_imp, top = 20)
+```
+
+### Predictive model: XGBoost
+5. At least one model must be (relatively) more focused on predictive accuracy without interpretability. Imagine that you would submit this model to a prediction competition where the winner is chosen using a separate set of test data from the same data generating process (in-distribution generalization).
+
+LightBGM model: 
+```{r}
+params <- list(
+  objective = "binary",
+  metric = "auc",
+  learning_rate = 0.05,
+  num_leaves = 31,
+  max_depth = 6,
+  bagging_fraction = 0.8,
+  feature_fraction = 0.8
+  # is_unbalance = TRUE
+)
+
+set.seed(38036)
+lgb_cv <- lgb.cv(
+  params = params,
+  data = dtrain,
+  nrounds = 300,
+  nfold = 5,
+  early_stopping_rounds = 10,
+  verbose = 1,
+  stratified = TRUE
+)
+
+```
+
+```{r}
+# Best AUC and iteration
+best_iter <- lgb_cv$best_iter
+cat("Best nrounds:", best_iter, "\n")
+
+best_score <- lgb_cv$best_score
+cat("Best AUC:", best_score, "\n")
+```
+
+```{r}
+final_model <- lgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = best_iter
+)
+```
+
+Compute accuracy: 
+```{r}
+# Predict probabilities
+pred_probs <- predict(final_model, as.matrix(X_test))
+
+# Classify predictions
+pred_labels <- ifelse(pred_probs > 0.5, 1, 0)
+
+# Accuracy
+lgb_accuracy <- mean(pred_labels == y_test)
+cat("LightGBM Accuracy:", round(lgb_accuracy, 3), "\n")
+```
+
+AUC: 
+```{r}
+roc_obj <- roc(response = y_test, predictor = pred_probs)
+
+lgb_auc <- auc(roc_obj)
+print(lgb_auc)
+
+plot(roc_obj, main = "ROC Curve - LightGBM", col = "blue")
+```
+
+```{r}
+library(lightgbm)
+
+# Define the parameter grid
+grid <- expand.grid(
+  num_leaves = c(31, 40, 64),
+  max_depth = c(6, 8),
+  learning_rate = c(0.01, 0.05),
+  lambda_l1 = c(0, 0.1),
+  lambda_l2 = c(0, 0.1)
+)
+
+results <- data.frame()
+
+# Grid search loop
+for (i in 1:nrow(grid)) {
+  params <- list(
+    objective = "binary",
+    metric = "auc",
+    boosting = "gbdt",
+    num_leaves = grid$num_leaves[i],
+    max_depth = grid$max_depth[i],
+    learning_rate = grid$learning_rate[i],
+    lambda_l1 = grid$lambda_l1[i],
+    lambda_l2 = grid$lambda_l2[i],
+    bagging_fraction = 0.8,
+    feature_fraction = 0.8,
+    verbosity = -1
+  )
+  
+  set.seed(38036)
+  cv <- lgb.cv(
+    params = params,
+    data = dtrain,
+    nrounds = 500,
+    nfold = 5,
+    stratified = TRUE,
+    early_stopping_rounds = 10,
+    verbose = -1
+  )
+  
+  auc <- max(unlist(cv$record_evals$valid$auc$eval))
+  best_iter <- cv$best_iter
+  
+  results <- rbind(
+    results,
+    data.frame(
+      num_leaves = params$num_leaves,
+      max_depth = params$max_depth,
+      learning_rate = params$learning_rate,
+      lambda_l1 = params$lambda_l1,
+      lambda_l2 = params$lambda_l2,
+      best_auc = auc,
+      best_iter = best_iter
+    )
+  )
+  
+  cat(sprintf("Grid %d done: AUC = %.5f\n", i, auc))
+}
+```
+```{r}
+# Sort the results by best AUC in descending order
+best_row <- results[which.max(results$best_auc), ]
+
+# Extract as a named list
+best_params <- list(
+  objective = "binary",
+  metric = "auc",
+  boosting = "gbdt",
+  num_leaves = best_row$num_leaves,
+  max_depth = best_row$max_depth,
+  learning_rate = best_row$learning_rate,
+  lambda_l1 = best_row$lambda_l1,
+  lambda_l2 = best_row$lambda_l2,
+  bagging_fraction = 0.8,
+  feature_fraction = 0.8,
+  verbosity = -1
+)
+
+# Also extract best iteration
+best_iter <- best_row$best_iter
+```
+
+```{r}
+final_model <- lgb.train(
+  params = best_params,
+  data = dtrain,
+  nrounds = best_iter,
+  verbose = 1
+)
+```
+
+
+Confusion matrix:
+```{r}
+# Confusion matrix
+cm <- confusionMatrix(factor(pred_labels), factor(y_test), positive = "1")
+print(cm)
+
+# Plot confusion matrix
+cm_table <- as.data.frame(cm$table)
+colnames(cm_table) <- c("Predicted", "Actual", "Freq")
+
+ggplot(data = cm_table, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 6) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix", x = "Actual", y = "Predicted") +
+  theme_minimal()
+```
+
+### Summary of model performance
+
+```{r}
+model_names <- c("Logistic Regression", "Softmax Regression", "Decision Tree" , "Random Forest", "XGBoost")
+accuracy <- c(base_accuracy, softmax_accuracy, tree_accuracy, rf_accuracy, lgb_accuracy)
+auc <- c(base_auc, softmax_auc, tree_auc, rf_auc, lgb_auc)
+
+# Create a data frame
+summary_table <- data.frame(
+  Model = model_names,
+  Accuracy = accuracy,
+  AUC = auc
+)
+
+# View the table
+print(summary_table)
+```
+
+
+
