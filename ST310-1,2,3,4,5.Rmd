@@ -79,6 +79,17 @@ head(drug_data2)
 ```
 
 Split data into training and testing set:
+
+```{r}
+set.seed(38036)
+train_indices <- createDataPartition(drug_data2$heroin_level, p = 0.8, list = FALSE)
+
+train_data2 <- drug_data2[train_indices, ]
+test_data2  <- drug_data2[-train_indices, ]
+
+head(train_data2)
+```
+
 ```{r}
 set.seed(38036)
 train_indices <- createDataPartition(drug_data2$heroin_use, p = 0.8, list = FALSE)
@@ -155,27 +166,6 @@ The baseline model has an overall accuracy of 83%. However, it performs poorly i
 2. At least one model should be fit using your own implementation of gradient descent. The only restrictions on this model are that the gradient of the loss function should not be a constant. You are free to use a simple model and a simple loss function to make the derivation and computation manageable.
 
 To implement a model using own gradient descent, I developed a multiclass softmax regression model to predict heroin comsumption levels (CL0 to CL6). This model uses the cross-entropy loss function, and the gradient was derived with respect to model weights. The implementation involved one-hot encoding the outcome variable and using a custom softmax function to compute class probabilities. I manually performed gradient descent over 500 iterations with a learning rate of 0.05. This model achieved an accuracy of 85.8% on the testing set.
-
-Convert all drug variables into ordered factor (0–6):
-```{r}
-drug_data2 <- drug_data
-drug_vars <- c("alcohol", "choc", "cannabis", "caff", "nicotine", "heroin")
-
-# Convert all to ordered numeric levels
-for (var in drug_vars) {
-  drug_data2[[paste0(var, "_level")]] <- as.numeric(factor(drug_data2[[var]], 
-                                                           levels = c("CL0", "CL1", "CL2", "CL3", "CL4", "CL5", "CL6"))) - 1
-}
-```
-
-Split data into training and testing set:
-```{r}
-set.seed(123)
-train_indices <- createDataPartition(drug_data2$heroin, p = 0.8, list = FALSE)
-
-train_data2 <- drug_data2[train_indices, ]
-test_data2  <- drug_data2[-train_indices, ]
-```
 
 Define functions:
 ```{r}
@@ -317,20 +307,24 @@ Compared to the baseline model,
 
 In conclusion, the Decision Tree serves as a relatively interpretable model, clearly outlining how specific behavioral and demographic factors influence heroin consumption classification.
 
+Prepare data:
 ```{r}
-# Factor all drug variables:
 drug_vars <- c("alcohol", "choc", "cannabis", "caff", "nicotine", "heroin")
 
-drug_data[drug_vars] <- lapply(drug_data[drug_vars], function(x) {
+# Create a copy of the data
+drug_data_copy <- drug_data
+
+# Convert specified variables to factors in the copied data
+drug_data_copy[drug_vars] <- lapply(drug_data_copy[drug_vars], function(x) {
   factor(x, levels = paste0("CL", 0:6))
 })
 
-# Split data into training and testing set:
-set.seed(123)
-train_indices <- createDataPartition(drug_data$heroin, p = 0.8, list = FALSE)
+# Split the copied data into training and testing sets
+set.seed(38036)
+train_indices <- createDataPartition(drug_data_copy$heroin, p = 0.8, list = FALSE)
 
-train_data <- drug_data[train_indices, ]
-test_data  <- drug_data[-train_indices, ]
+train_data <- drug_data_copy[train_indices, ]
+test_data  <- drug_data_copy[-train_indices, ]
 ```
 
 #### Build Decision Tree:
@@ -413,29 +407,6 @@ In addition, behavioral traits like sensation seeking (ss), impulsiveness, and e
 
 These results highlight the complex interplay between psychological traits, substance use behaviors, and demographic factors in understanding patterns of heroin consumption.
 
-```{r}
-# Convert drugs to numeric 0–6 levels
-drug_vars <- c("alcohol", "choc", "cannabis", "caff", "nicotine", "heroin")
-for (var in drug_vars) {
-  drug_data[[paste0(var, "_level")]] <- as.numeric(factor(drug_data[[var]], 
-                                                           levels = paste0("CL", 0:6))) - 1
-}
-
-drug_data2 <- drug_data
-predictor_vars <- c("age", "gender", "education", "country", "ethnicity",
-                    "nscore", "escore", "oscore", "ascore", "cscore",
-                    "impulsive", "ss", "alcohol_level", "choc_level", 
-                    "cannabis_level", "caff_level", "nicotine_level")
-```
-
-```{r}
-# Split Data
-set.seed(888)
-train_indices <- createDataPartition(drug_data2$heroin_level, p = 0.8, list = FALSE)
-train_data2 <- drug_data2[train_indices, ]
-test_data2  <- drug_data2[-train_indices, ]
-```
-
 #### Build Random Forest:
 ```{r}
 set.seed(2025)
@@ -471,6 +442,20 @@ plot(var_imp, top = 20)
 
 ### Predictive model: XGBoost
 5. At least one model must be (relatively) more focused on predictive accuracy without interpretability. Imagine that you would submit this model to a prediction competition where the winner is chosen using a separate set of test data from the same data generating process (in-distribution generalization).
+
+```{r}
+X_train <- train_data2[, setdiff(names(train_data2), "heroin_level")]
+X_test  <- test_data2[, setdiff(names(test_data2), "heroin_level")]
+
+X_train_matrix <- as.matrix(X_train)
+X_test_matrix  <- as.matrix(X_test)
+
+X_train_sparse <- Matrix(X_train_matrix, sparse = TRUE)
+X_test_sparse  <- Matrix(X_test_matrix, sparse = TRUE)
+
+dtrain <- lgb.Dataset(data = X_train_sparse, label = y_train)
+dtest <- lgb.Dataset(data = X_test_sparse, label = y_test)
+```
 
 LightBGM model: 
 ```{r}
