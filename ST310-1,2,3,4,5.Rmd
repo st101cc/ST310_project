@@ -400,36 +400,37 @@ tree_fit %>%
 ### High Dimensional Model: Random Forest
 4. At least one model must be (relatively) high-dimensional. If your dataset has many predictors, and the number of observations is not much larger, then for example you could fit a penalized regression model using all the predictors. If your dataset does not have many predictors you could consider models that include non-linear transformations, interaction terms, and/or local smoothing to increase the effective degrees of freedom.
 
-The high-dimensional model chosen is Random Forest. It achieved a test set accuracy of 84.6%, demonstrating strong predictive performance for the multi-class task of heroin consumption level classification. The model selected and leveraged a wide range of features, with personality traits emerging as the most influential.
+The high-dimensional model implemented was a Random Forest classifier to predict binary heroin use (use vs. no use). To address class imbalance in the training data, oversampling was applied. The model achieved a test set accuracy of 84.4%.
 
-According to the variable importance results, the NEO-FFI-R personality dimensions—particularly agreeableness (ascore), neuroticism (nscore), conscientiousness (cscore), openness (oscore), and extraversion (escore)—were the top predictors. This suggests that personality plays a central role in differentiating heroin use levels.
-
-In addition, behavioral traits like sensation seeking (ss), impulsiveness, and education level were also significant. Among drug-use features, cannabis consumption and alcohol use were the most predictive.
-
-These results highlight the complex interplay between psychological traits, substance use behaviors, and demographic factors in understanding patterns of heroin consumption.
+The most important predictors, as indicated by variable importance, are: Cannabis use, country, and neuroticism (nscore) – the top three signals for predicting heroin use. Other key variables included personality traits such as openness (oscore), agreeableness (ascore), conscientiousness (cscore), and extraversion (escore), as well as sensation seeking, nicotine use, and impulsiveness. These results underscore a complex relationship between personality dimensions, other substance use patterns, and geographic context in shaping the likelihood of heroin use.
 
 #### Build Random Forest:
 ```{r}
 set.seed(2025)
 rf_model <- train(
-  x = train_data2[, predictor_vars],
-  y = as.factor(train_data2$heroin_level),
+  x = train_data3[, predictor_vars],
+  y = train_data3$heroin_use,
   method = "rf",
   trControl = trainControl(method = "cv", number = 5),
   tuneGrid = expand.grid(mtry = c(2, 3, 4))
 )
+
 ```
 
 ```{r}
-# Evaluate Model
-pred_train <- predict(rf_model, newdata = train_data2[, predictor_vars])
+# Predict on oversampled model
+pred_train <- predict(rf_model, newdata = train_data3[, predictor_vars])
 pred_test <- predict(rf_model, newdata = test_data2[, predictor_vars])
 
-train_acc <- mean(pred_train == train_data2$heroin_level)
-test_acc <- mean(pred_test == test_data2$heroin_level)
+train_acc <- mean(pred_train == train_data3$heroin_use)
+test_acc <- mean(pred_test == test_data2$heroin_use)
 
 cat("Random Forest Accuracy (Train Set):", round(train_acc, 3), "\n")
 cat("Random Forest Accuracy (Test Set):", round(test_acc, 3), "\n")
+```
+
+```{r}
+confusionMatrix(pred_test, test_data2$heroin_use)
 ```
 
 ```{r}
