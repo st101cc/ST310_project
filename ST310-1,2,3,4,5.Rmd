@@ -23,6 +23,7 @@ library(yardstick)
 library(smotefamily)
 library(pROC)
 library(lightgbm)
+library(ROSE)
 ```
 
 Load data:
@@ -79,25 +80,25 @@ head(drug_data2)
 ```
 
 Split data into training and testing set:
-
 ```{r}
 set.seed(38036)
-train_indices <- createDataPartition(drug_data2$heroin_level, p = 0.8, list = FALSE)
 
-train_data2 <- drug_data2[train_indices, ]
-test_data2  <- drug_data2[-train_indices, ]
-
-head(train_data2)
-```
-
-```{r}
-set.seed(38036)
 train_indices <- createDataPartition(drug_data2$heroin_use, p = 0.8, list = FALSE)
 
 train_data2 <- drug_data2[train_indices, ]
 test_data2  <- drug_data2[-train_indices, ]
 
 head(train_data2)
+table(train_data2$heroin_use)
+```
+
+Oversample training data:
+```{r}
+set.seed(38036)
+
+train_data3 <- ovun.sample(heroin_use ~ ., data = train_data2, method = "over", N = 2 * sum(train_data2$heroin_use == 0))$data
+
+table(train_data3$heroin_use)
 ```
 
 ### Baseline model: logistic regression
@@ -440,15 +441,19 @@ print(var_imp)
 plot(var_imp, top = 20)
 ```
 
-### Predictive model: XGBoost
+### Predictive model: LGB
 5. At least one model must be (relatively) more focused on predictive accuracy without interpretability. Imagine that you would submit this model to a prediction competition where the winner is chosen using a separate set of test data from the same data generating process (in-distribution generalization).
 
+Prepare data for LGB:
 ```{r}
-X_train <- train_data2[, setdiff(names(train_data2), "heroin_level")]
-X_test  <- test_data2[, setdiff(names(test_data2), "heroin_level")]
+X_train <- train_data2[, setdiff(names(train_data2), "heroin_use")]
+X_test  <- test_data2[, setdiff(names(test_data2), "heroin_use")]
 
 X_train_matrix <- as.matrix(X_train)
 X_test_matrix  <- as.matrix(X_test)
+
+y_train <- as.numeric(train_data2$heroin_use) - 1
+y_test  <- as.numeric(test_data2$heroin_use) - 1
 
 X_train_sparse <- Matrix(X_train_matrix, sparse = TRUE)
 X_test_sparse  <- Matrix(X_test_matrix, sparse = TRUE)
@@ -457,7 +462,7 @@ dtrain <- lgb.Dataset(data = X_train_sparse, label = y_train)
 dtest <- lgb.Dataset(data = X_test_sparse, label = y_test)
 ```
 
-LightBGM model: 
+LightGBM model: 
 ```{r}
 params <- list(
   objective = "binary",
@@ -467,7 +472,6 @@ params <- list(
   max_depth = 6,
   bagging_fraction = 0.8,
   feature_fraction = 0.8
-  # is_unbalance = TRUE
 )
 
 set.seed(38036)
