@@ -1,0 +1,546 @@
+---
+title: "ST310 Project"
+date: "2025-04-11"
+output: html_document
+---
+
+```{r setup1, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+rm(list = ls())
+```
+
+Load libraries:
+```{r}
+library(caret)
+library(ggplot2)
+library(xgboost)
+library(caret)
+library(Matrix)
+library(ROCR)
+library(tidymodels)
+library(dplyr)
+library(yardstick)
+library(smotefamily)
+library(pROC)
+library(lightgbm)
+library(ROSE)
+```
+
+Load data:
+```{r}
+#data <- read.csv("data/drug_consumption.csv")
+data <- read.csv("~/Desktop/ST310 Machine Learning/project/drug_consumption.csv")
+
+# Keep only selected drug variables along with the original features
+selected_vars <- c("age", "gender", "education", "country", "ethnicity", "nscore", 
+                   "escore", "oscore","ascore", "cscore", "impuslive", "ss", 
+                   "alcohol", "choc", "cannabis", "caff", "nicotine", "amphet")
+drug_data <-  data[, selected_vars]
+
+# Rename 'impuslive' to 'impulsive'
+colnames(drug_data)[colnames(drug_data) == "impuslive"] <- "impulsive"
+
+head(drug_data)
+table(drug_data$amphet)
+```
+
+Check data structure:
+```{r}
+str(drug_data)
+```
+
+### Initial data manipulation
+
+Convert all drug variables into ordered factor (0–6):
+```{r}
+drug_data2 <- drug_data
+drug_vars <- c("alcohol", "choc", "cannabis", "caff", "nicotine", "amphet")
+
+# Convert all to ordered numeric levels
+for (var in drug_vars) {
+  drug_data2[[paste0(var, "_level")]] <- as.numeric(factor(drug_data2[[var]], 
+                                                           levels = c("CL0", "CL1", "CL2", "CL3", "CL4", "CL5", "CL6"))) - 1
+}
+
+# Remove the original categorical drug columns
+drug_data2 <- drug_data2[ , !(names(drug_data2) %in% drug_vars)]
+```
+
+Convert amphet to binary factor: 
+- 0 = no use (CL0)
+- 1 = used (CL1 to CL6)
+```{r}
+# Create binary target: 0 = no use, 1 = used
+drug_data2$amphet_use <- ifelse(drug_data2$amphet_level > 0, 1, 0)
+drug_data2$amphet_use <- as.factor(drug_data2$amphet_use)
+
+# Remove heroin_level
+drug_data2$amphet_level <- NULL
+
+head(drug_data2)
+```
+
+Check data structure:
+```{r}
+str(drug_data2)
+```
+
+Split data into training and testing set:
+```{r}
+set.seed(38036)
+
+train_indices <- createDataPartition(drug_data2$amphet_use, p = 0.8, list = FALSE)
+
+train_data2 <- drug_data2[train_indices, ]
+test_data2  <- drug_data2[-train_indices, ]
+
+head(train_data2)
+table(train_data2$amphet_use)
+```
+### Baseline model: logistic regression
+1. At least one model must be simple enough to consider as a baseline for comparison to the more sophisticated models. Regression models or nearest neighbors methods, based on only a few predictors, are good candidates for baseline methods.
+
+Logistic regression model:
+```{r}
+base_model <- glm(amphet_use ~ . , data = train_data2, family = binomial)
+summary(base_model)
+```
+
+The result from logistic regression indicate that the most significant predictors of heroin use are age, country, nscore (neuroticism), oscore (openness to experience), ss (sensation seeking), as well as alcohol level and nicotine level. This finding is consistent with behavioral expectations: individuals who are younger, more emotionally reactive, open to new experiences, and exhibit higher levels of sensation seeking are more inclined to experiment with substances like heroin. Additionally, the use of other substances such as alcohol and nicotine may serve as gateways, reflecting broader patterns of drug experimentation and increased risk tolerance.
+
+Compute accuracy:
+```{r}
+# Get predicted probabilities
+pred_probs <- predict(base_model, newdata = test_data2, type = "response")
+
+# Convert to class prediction (threshold = 0.5)
+pred_class <- ifelse(pred_probs > 0.5, 1, 0)
+
+# Accuracy
+base_accuracy <- mean(pred_class == test_data2$amphet_use)
+cat("Logistic Regression Accuracy:", round(base_accuracy, 3), "\n")
+```
+
+Confusion matrix:
+```{r}
+# Convert to factors for confusionMatrix function
+pred_class <- factor(pred_class, levels = c(0, 1))
+actual_class <- factor(test_data2$heroin_use, levels = c(0, 1))
+
+# Confusion matrix
+cm <- confusionMatrix(pred_class, actual_class, positive = "1")
+print(cm)
+
+# Plot confusion matrix
+cm_table <- as.data.frame(cm$table)
+colnames(cm_table) <- c("Predicted", "Actual", "Freq")
+
+ggplot(data = cm_table, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 6) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix", x = "Actual", y = "Predicted") +
+  theme_minimal()
+```
+
+Compute ROC:
+```{r}
+true_labels <- as.numeric(as.character(test_data2$heroin_use))
+roc_obj <- roc(response = true_labels, predictor = pred_probs)
+
+# Print auc
+log_auc <- auc(roc_obj)
+print(log_auc)
+
+# Plot ROC curve
+plot(roc_obj, main = "ROC Curve - Logistic Regression", col = "blue")
+```
+The model's AUC is 0.776, indicating that there is a moderate 77.6% chance that the model ranks a random positive case (heroin user) higher than a random negative case (non-user). 
+
+The baseline model has an overall accuracy of 83%. However, it performs poorly in identifying heroin users, correctly detecting only 5 out of 56 actual cases. This likely results from class imbalance, where the model becomes biased toward predicting the majority class (non-users) and leads to a high number of false negatives.  Further models can be explored to reduce the false negative rate and improve the model's ability to detect actual heroin users.
+
+### Custom Gradient Descent Model (Sigmoid Function)
+2. At least one model should be fit using your own implementation of gradient descent. The only restrictions on this model are that the gradient of the loss function should not be a constant. You are free to use a simple model and a simple loss function to make the derivation and computation manageable.
+
+To implement a model using own gradient descent, I developed a multiclass softmax regression model to predict heroin comsumption levels (CL0 to CL6). This model uses the cross-entropy loss function, and the gradient was derived with respect to model weights. The implementation involved one-hot encoding the outcome variable and using a custom softmax function to compute class probabilities. I manually performed gradient descent over 500 iterations with a learning rate of 0.05. This model achieved an accuracy of 85.8% on the testing set.
+
+Define functions:
+```{r}
+# Sigmoid Function:
+sigmoid <- function(z) {
+  1 / (1 + exp(-z))
+}
+
+# Binary Cross-Entropy Loss:
+compute_loss_bin <- function(X, y, weights) {
+  z <- X %*% weights
+  p <- sigmoid(z)
+  # Adding a small value (1e-10) to avoid log(0)
+  loss <- -mean(y * log(p + 1e-10) + (1 - y) * log(1 - p + 1e-10))
+  return(loss)
+}
+
+# Gradient of Loss:
+compute_gradient_bin <- function(X, y, weights) {
+  z <- X %*% weights
+  p <- sigmoid(z)
+  grad <- t(X) %*% (p - y) / nrow(X)
+  return(grad)
+}
+
+
+# Define Gradient Descent function:
+gradient_descent <- function(X, y, lr = 0.05, n_iter = 500) {
+  num_features <- ncol(X)
+  weights <- matrix(0, nrow = num_features, ncol = 1)
+  
+  for (i in 1:n_iter) {
+    grad <- compute_gradient_bin(X, y, weights)
+    weights <- weights - lr * grad
+    if (i %% 50 == 0) {
+      loss <- compute_loss_bin(X, y, weights)
+      cat("Iteration:", i, "Loss:", loss, "\n")
+    }
+  }
+  return(weights)
+}
+```
+
+Prepare Data & Train the Model:
+```{r}
+set.seed(38036)
+# Removing the target variable
+X_train <- as.matrix(train_data2[, -ncol(train_data2)])
+
+X_train <- scale(X_train)
+X_train <- cbind(1, X_train)
+
+y_train <- as.numeric(as.character(train_data2[, ncol(train_data2)]))
+y_train <- matrix(y_train, ncol = 1)
+
+weights_trained <- gradient_descent(X_train, y_train, lr = 0.05, n_iter = 500)
+```
+
+Evaluate on Test and Train Data:
+```{r}
+# Test Data
+X_test <- as.matrix(test_data2[, -ncol(test_data2)])
+X_test <- scale(X_test)
+X_test <- cbind(1, X_test)
+
+y_test <- as.numeric(as.character(test_data2[, ncol(test_data2)]))
+y_test <- matrix(y_test, ncol = 1)
+
+# Predict probabilities using sigmoid
+predict_prob_test <- sigmoid(X_test %*% weights_trained)
+predict_class_test <- ifelse(predict_prob_test >= 0.5, 1, 0)
+
+sigmoid_test_accuracy <- mean(predict_class_test == y_test)
+cat("Gradient Descent Accuracy (Test Set):", round(sigmoid_test_accuracy, 3), "\n")
+
+# Train Data
+# Predict probabilities
+predict_prob_train <- sigmoid(X_train %*% weights_trained)
+predict_class_train <- ifelse(predict_prob_train >= 0.5, 1, 0)
+
+sigmoid_train_accuracy <- mean(predict_class_train == y_train)
+cat("Gradient Descent Accuracy (Train Set):", round(sigmoid_train_accuracy, 3), "\n")
+```
+
+Confusion Martrix for Gradient Descent (Test Set):
+```{r}
+pred_test <- factor(predict_class_test, levels = c(0, 1))
+actual_test <- factor(test_data2$amphet_use, levels = c(0, 1))
+
+confusionMatrix(pred_test, actual_test)
+```
+Compute ROC:
+```{r}
+true_labels <- as.numeric(as.character(test_data2$amphet_use))
+roc_sigmoid <- roc(response = true_labels, predictor = predict_prob_test)
+
+# Print auc
+sigmoid_auc <- auc(roc_sigmoid)
+print(sigmoid_auc)
+
+# Plot ROC curve
+plot(roc_sigmoid, main = "ROC Curve - Gradient Descent (Sigmoid)", col = "blue")
+```
+
+### Interpretable Model: Lasso Regression
+3. At least one non-baseline model must be (relatively) interpretable. For this model you should write a brief sub-section including your interpretation of the results. You could compare to a baseline model on both predictive accuracy and (in)consistency of interpretations.
+
+
+Compared to the baseline model, 
+
+In conclusion, the Decision Tree serves as a relatively interpretable model, clearly outlining how specific behavioral and demographic factors influence heroin consumption classification.
+
+```{r}
+train_data2$amphet_use <- as.factor(train_data2$amphet_use)
+test_data2$amphet_use <- as.factor(test_data2$amphet_use)
+
+# Build Lasso Model
+lasso_recipe <- recipe(amphet_use ~ ., data = train_data2) %>%
+  step_normalize(all_predictors()) 
+
+lasso_spec <- logistic_reg(
+  mode = "classification",
+  penalty = tune(),       
+  mixture = 1 
+) %>%
+  set_engine("glmnet")
+
+set.seed(38036)
+folds <- vfold_cv(train_data2, v = 10)
+
+# Workflow
+lasso_workflow <- workflow() %>%
+  add_recipe(lasso_recipe) %>%
+  add_model(lasso_spec)
+
+lasso_grid <- grid_regular(penalty(), levels = 30)
+
+tuned_lasso <- tune_grid(
+  lasso_workflow,
+  resamples = folds,
+  grid = lasso_grid,
+  metrics = metric_set(accuracy, roc_auc)
+)
+
+# Best lambda
+best_lasso <- select_best(tuned_lasso, metric = "accuracy")
+print(best_lasso)
+
+final_lasso <- finalize_workflow(lasso_workflow, best_lasso)
+
+lasso_fit <- fit(final_lasso, data = train_data2)
+```
+Evaluate on Test and Train Data:
+```{r}
+# Test Data:
+pred_test <- predict(lasso_fit, new_data = test_data2, type = "class") %>%
+  pull(.pred_class)
+
+# Predict probabilities 
+probs_test <- predict(lasso_fit, new_data = test_data2, type = "prob")
+
+# Test Accuracy
+lasso_test_acc <- mean(pred_test == test_data2$amphet_use)
+cat("Lasso Regression Accuracy (Test Set):", round(lasso_test_acc, 3), "\n")
+
+# Train Data:
+pred_train <- predict(lasso_fit, new_data = train_data2, type = "class") %>%
+  pull(.pred_class)
+
+# Train Accuracy
+lasso_train_acc <- mean(pred_train == train_data2$amphet_use)
+cat("Lasso Regression Accuracy (Train Set):", round(lasso_train_acc, 3), "\n")
+```
+
+```{r}
+lasso_coef <- lasso_fit %>%
+  extract_fit_parsnip() %>%
+  tidy() %>%
+  filter(estimate != 0) %>%
+  arrange(desc(abs(estimate)))
+
+print(lasso_coef)
+```
+
+Confusion Matrix for Lasso (Test Set):
+```{r}
+confusionMatrix(pred_test, test_data2$amphet_use)
+```
+Compute ROC & Compare with Baseline Logistic Model
+```{r}
+true_labels <- test_data2$amphet_use
+pred_probs_lasso <- probs_test %>% pull(.pred_1)
+
+roc_lasso <- roc(response = true_labels, predictor = pred_probs_lasso)
+lasso_auc <- auc(roc_lasso)
+print(lasso_auc)
+
+# Baseline Logistic's ROC
+plot(roc_obj, main = "ROC Curve Comparison: Logistic vs Lasso",
+     col = "blue", lwd = 2)
+
+# Lasso's ROC
+lines(roc_lasso, col = "red", lwd = 2, lty = 2)
+
+legend("bottomright",
+       legend = c(paste0("Logistic (AUC = ", round(log_auc, 4), ")"),
+                  paste0("Lasso (AUC = ", round(auc_lasso, 4), ")")),
+       col = c("blue", "red"),
+       lty = c(1, 2),
+       lwd = 2)
+```
+
+### High Dimensional Model: Random Forest
+4. At least one model must be (relatively) high-dimensional. If your dataset has many predictors, and the number of observations is not much larger, then for example you could fit a penalized regression model using all the predictors. If your dataset does not have many predictors you could consider models that include non-linear transformations, interaction terms, and/or local smoothing to increase the effective degrees of freedom.
+
+The high-dimensional model implemented was a Random Forest classifier to predict binary heroin use (use vs. no use). To address class imbalance in the training data, oversampling was applied. The model achieved a test set accuracy of 84.4%.
+
+The most important predictors, as indicated by variable importance, are: Cannabis use, country, and neuroticism (nscore) – the top three signals for predicting heroin use. Other key variables included personality traits such as openness (oscore), agreeableness (ascore), conscientiousness (cscore), and extraversion (escore), as well as sensation seeking, nicotine use, and impulsiveness. These results underscore a complex relationship between personality dimensions, other substance use patterns, and geographic context in shaping the likelihood of heroin use.
+
+#### Build Random Forest:
+```{r}
+set.seed(38036)
+rf_model <- train(
+  x = train_data3[, -ncol(train_data3)],
+  y = train_data3$heroin_use,
+  method = "rf",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneGrid = expand.grid(mtry = c(2, 3, 4))
+)
+```
+
+```{r}
+# Predict on oversampled model
+pred_train <- predict(rf_model, newdata = train_data3[, -ncol(train_data3)])
+pred_test <- predict(rf_model, newdata = test_data2[, -ncol(test_data2)])
+
+train_acc <- mean(pred_train == train_data3$heroin_use)
+test_acc <- mean(pred_test == test_data2$heroin_use)
+
+cat("Random Forest Accuracy (Train Set):", round(train_acc, 3), "\n")
+cat("Random Forest Accuracy (Test Set):", round(test_acc, 3), "\n")
+```
+
+```{r}
+confusionMatrix(pred_test, test_data2$heroin_use)
+```
+
+```{r}
+var_imp <- varImp(rf_model)
+print(var_imp)
+```
+
+```{r}
+plot(var_imp, top = 20)
+```
+
+### Predictive model: LGB
+5. At least one model must be (relatively) more focused on predictive accuracy without interpretability. Imagine that you would submit this model to a prediction competition where the winner is chosen using a separate set of test data from the same data generating process (in-distribution generalization).
+
+Prepare data for LGB:
+```{r}
+X_train <- train_data2[, setdiff(names(train_data2), "heroin_use")]
+X_test  <- test_data2[, setdiff(names(test_data2), "heroin_use")]
+
+X_train_matrix <- as.matrix(X_train)
+X_test_matrix  <- as.matrix(X_test)
+
+y_train <- as.numeric(train_data2$heroin_use) - 1
+y_test  <- as.numeric(test_data2$heroin_use) - 1
+
+X_train_sparse <- Matrix(X_train_matrix, sparse = TRUE)
+X_test_sparse  <- Matrix(X_test_matrix, sparse = TRUE)
+
+dtrain <- lgb.Dataset(data = X_train_sparse, label = y_train)
+dtest <- lgb.Dataset(data = X_test_sparse, label = y_test)
+```
+
+LightGBM model: 
+```{r}
+params <- list(
+  objective = "binary",
+  metric = "auc",
+  learning_rate = 0.05,
+  num_leaves = 31,
+  max_depth = 6,
+  bagging_fraction = 0.8,
+  feature_fraction = 0.8
+)
+
+set.seed(38036)
+lgb_cv <- lgb.cv(
+  params = params,
+  data = dtrain,
+  nrounds = 300,
+  nfold = 5,
+  early_stopping_rounds = 10,
+  verbose = 1,
+  stratified = TRUE
+)
+
+```
+
+```{r}
+# Best AUC and iteration
+best_iter <- lgb_cv$best_iter
+cat("Best nrounds:", best_iter, "\n")
+
+best_score <- lgb_cv$best_score
+cat("Best AUC:", best_score, "\n")
+```
+
+```{r}
+final_model <- lgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = best_iter
+)
+```
+
+Compute accuracy: 
+```{r}
+# Predict probabilities
+pred_probs <- predict(final_model, as.matrix(X_test))
+
+# Classify predictions
+pred_labels <- ifelse(pred_probs > 0.5, 1, 0)
+
+# Accuracy
+lgb_accuracy <- mean(pred_labels == y_test)
+cat("LightGBM Accuracy:", round(lgb_accuracy, 3), "\n")
+```
+
+AUC: 
+```{r}
+roc_obj <- roc(response = y_test, predictor = pred_probs)
+
+lgb_auc <- auc(roc_obj)
+print(lgb_auc)
+
+plot(roc_obj, main = "ROC Curve - LightGBM", col = "blue")
+```
+
+Confusion matrix:
+```{r}
+# Confusion matrix
+cm <- confusionMatrix(factor(pred_labels), factor(y_test), positive = "1")
+print(cm)
+
+# Plot confusion matrix
+cm_table <- as.data.frame(cm$table)
+colnames(cm_table) <- c("Predicted", "Actual", "Freq")
+
+ggplot(data = cm_table, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 6) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix", x = "Actual", y = "Predicted") +
+  theme_minimal()
+```
+
+### Summary of model performance
+
+```{r}
+model_names <- c("Logistic Regression", "Gradient Descent (Sigmoid)", "Lasso Regression" , "Random Forest", "XGBoost")
+accuracy <- c(base_accuracy, sigmoid_test_accuracy, lasso_test_acc, rf_accuracy, lgb_accuracy)
+auc <- c(base_auc, sigmoid_auc, lasso_auc, rf_auc, lgb_auc)
+
+# Create a data frame
+summary_table <- data.frame(
+  Model = model_names,
+  Accuracy = accuracy,
+  AUC = auc
+)
+
+# View the table
+print(summary_table)
+```
+
+
+
