@@ -383,45 +383,76 @@ legend("bottomright",
 # High Dimensional Model: Random Forest
 4. At least one model must be (relatively) high-dimensional. If your dataset has many predictors, and the number of observations is not much larger, then for example you could fit a penalized regression model using all the predictors. If your dataset does not have many predictors you could consider models that include non-linear transformations, interaction terms, and/or local smoothing to increase the effective degrees of freedom.
 
-The high-dimensional model implemented was a Random Forest classifier to predict binary heroin use (use vs. no use). To address class imbalance in the training data, oversampling was applied. The model achieved a test set accuracy of 84.4%.
+The high-dimensional model was a Random Forest classifier built to predict binary amphetamine use (use vs. no use). We first applied oversampling to the minority class in the training data to mitigate class imbalance. After tuning the number of variables tried at each split (mtry ∈ {2, 3, 4}) via 5-fold cross-validation, the final forest attained 73.4% accuracy on the held-out test set.
 
-The most important predictors, as indicated by variable importance, are: Cannabis use, country, and neuroticism (nscore) – the top three signals for predicting heroin use. Other key variables included personality traits such as openness (oscore), agreeableness (ascore), conscientiousness (cscore), and extraversion (escore), as well as sensation seeking, nicotine use, and impulsiveness. These results underscore a complex relationship between personality dimensions, other substance use patterns, and geographic context in shaping the likelihood of heroin use.
+Examining the MeanDecreaseGini importances from the fitted forest, we found that other substance-use measures are the strongest predictors of amphetamine consumption. Cannabis_level was by far the top signal, followed by nicotine_level. Among personality dimensions, openness (oscore), conscientiousness (cscore) and neuroticism (nscore) emerged next in importance. Sensation-seeking (ss) and extraversion (escore) also contributed substantially, with agreeableness (ascore) trailing closely. Demographic features such as education, age and country had smaller—but still noticeable—effects. Together, these results suggest that patterns of other drug use, particularly cannabis and nicotine.
 
 ## Build Random Forest:
 ```{r}
 set.seed(38036)
-rf_model <- train(
-  x = train_data3[, -ncol(train_data3)],
-  y = train_data3$heroin_use,
-  method = "rf",
-  trControl = trainControl(method = "cv", number = 5),
-  tuneGrid = expand.grid(mtry = c(2, 3, 4))
+cv_splits <- vfold_cv(train_data2, v = 5, strata = amphet_use)
+
+```
+
+```{r}
+rf_recipe <- recipe(amphet_use ~ ., data = train_data2)
+
+```
+
+```{r}
+rf_spec <- 
+  rand_forest(
+    trees = 100,
+    mtry  = tune()
+  ) %>%
+  set_mode("classification") %>%
+  set_engine("randomForest")
+
+```
+
+```{r}
+rf_wf <- workflow() %>%
+  add_recipe(rf_recipe) %>%
+  add_model(rf_spec)
+
+mtry_grid <- tibble(mtry = c(2L, 3L, 4L))
+
+```
+
+```{r}
+rf_res <- tune_grid(
+  rf_wf,
+  resamples = cv_splits,
+  grid      = mtry_grid,
+  metrics   = metric_set(accuracy, roc_auc)
 )
+
+best_rf <- rf_res %>% select_best(metric = "accuracy")
 ```
 
 ```{r}
-# Predict on oversampled model
-pred_train <- predict(rf_model, newdata = train_data3[, -ncol(train_data3)])
-pred_test <- predict(rf_model, newdata = test_data2[, -ncol(test_data2)])
+rf_final <- rf_wf %>%
+  finalize_workflow(best_rf) %>%
+  fit(data = train_data2)
 
-train_acc <- mean(pred_train == train_data3$heroin_use)
-test_acc <- mean(pred_test == test_data2$heroin_use)
-
-cat("Random Forest Accuracy (Train Set):", round(train_acc, 3), "\n")
-cat("Random Forest Accuracy (Test Set):", round(test_acc, 3), "\n")
 ```
 
 ```{r}
-confusionMatrix(pred_test, test_data2$heroin_use)
+pred_train <- predict(rf_final, train_data2) %>% pull(.pred_class)
+pred_test  <- predict(rf_final, test_data2)  %>% pull(.pred_class)
+
+train_acc <- mean(pred_train == train_data2$amphet_use)
+test_acc  <- mean(pred_test  == test_data2$amphet_use)
+
+cat("RF Accuracy (Train):", round(train_acc,3), "\n")
+cat("RF Accuracy (Test) :", round(test_acc,3), "\n")
+
 ```
 
 ```{r}
-var_imp <- varImp(rf_model)
-print(var_imp)
-```
-
-```{r}
-plot(var_imp, top = 20)
+rf_eng <- extract_fit_engine(rf_final)
+print(importance(rf_eng))
+varImpPlot(rf_eng)
 ```
 
 # Predictive model: XGB 
