@@ -525,7 +525,7 @@ autoplot(roc_df) +
   theme_minimal()
 ```
 
-*Figure 3.* ROC curve comparison between the baseline logistic model and the lasso regression model. The two curves are nearly identical with AUC values around 0.803.
+*Figure 3. ROC curve comparison between the baseline logistic model and the lasso regression model.* The two curves are nearly identical with AUC values around 0.803.
 
 ### 4. High Dimensional Model: Random Forest
 
