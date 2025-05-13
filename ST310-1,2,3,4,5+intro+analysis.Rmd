@@ -20,12 +20,11 @@ In addition to the misuse of illegal drugs, the non-medical use of prescription 
 
 This project aims to use machine learning methods to predict the usage of amphetamine (*amphet_use*) based on a series of psychological, demographic, and behavioral variables. For demographic factors, we include age (*age*), gender (*gender*), education level (*education*), country of residence (*country*), and ethnicity (*ethnicity*). Psychological factors cover personality traits such as neuroticism (*nscore*), extraversion (*escore*), openness (*oscore*), agreeableness (*ascore*), conscientiousness (*cscore*), impulsivity (*impulsive*), and sensation-seeking (*ss*). Behavioral factors include consumption levels of other drugs: alcohol (*alcohol_level*), chocolate (*choc_level*), cannabis (*cannabis_level*), caffeine (*caff_level*), and nicotine (*nicotine_level*). Instead of including every drug variables from the original dataset, we selected these drugs due to their widespread use or relatively lower risk, which may help reveal broader patterns of drug consumption associated with amphetamine use. By identifying the key predictors of amphetamine use, the findings from this analysis can contribute to better strategies for prevention and early intervention.
 
-![*Figure 1: The 10 most addictive drugs*](ST310%20Machine%20Learning/drug.png){width="333"}
+![Figure 1: The 10 most addictive drugs](ST310%20Machine%20Learning/drug.png){width="333"} \## Dataset
 
-### Analysis
+The dataset that we used for our analysis is the Drug Consumption dataset from the UCI Machine Learning Repository (link to our dataset: <https://archive.ics.uci.edu/dataset/373/drug+consumption+quantified>). The dataset comprises records from 1,885 respondents, each characterized by 12 quantified attributes. These attributes include psychological assessments such as the NEO-FFI-R (measuring neuroticism, extraversion, openness, agreeableness, and conscientiousness), BIS-11 (impulsivity), and ImpSS (sensation seeking), along with demographic information (education level, age, gender, country of residence, and ethnicity). While these input attributes are originally categorical, all features have been numerically quantified.
 
-Our five distinct models predict amphetamine use based on demographic, psychological, and behavioural variables. Our logistic regression identified age, gender, and sensation-seeking as significant predictors, achieving 70% accuracy. Our custom stochastic gradient descent (SGD) model demonstrated slightly better accuracy (72.6%). The Lasso regression provided interpretability by shrinking less important predictors towards zero, identifying cannabis, nicotine, and age as key predictors. Its performance was similar to logistic regression, with an accuracy of 70.2%. The Random Forest model achieved higher accuracy (73.4%) and highlighted cannabis and nicotine consumption as the most critical predictors, along with key personality traits (openness, conscientiousness, and neuroticism). Finally, the XGBoost model attained strong predictive accuracy(74%) and interpretability, slightly outperforming previous models. Overall, these models collectively suggest that substance use patterns, especially cannabis and nicotine, along with personality and demographic factors, might be able to predict amphetamine usage.
-
+Respondents also reported their usage patterns across 18 legal and illegal substances, where drug use is categorized into seven classes: "Never Used", "Used over a Decade Ago", "Used in Last Decade", "Last Year", "Last Month", "Last Week", and Last Day".
 
 ### Load libraries and dataset
 
@@ -51,8 +50,8 @@ library(tibble)
 Load data:
 
 ```{r}
-#data <- read.csv("data/drug_consumption.csv")
-data <- read.csv("~/Desktop/ST310 Machine Learning/project/drug_consumption.csv")
+data <- read.csv("data/drug_consumption.csv")
+#data <- read.csv("~/Desktop/ST310 Machine Learning/project/drug_consumption.csv")
 
 # Keep only selected drug variables along with the original features
 selected_vars <- c("age", "gender", "education", "country", "ethnicity", "nscore", 
@@ -534,8 +533,6 @@ autoplot(roc_df) +
 
 ### 4. High Dimensional Model: Random Forest
 
-4.  At least one model must be (relatively) high-dimensional. If your dataset has many predictors, and the number of observations is not much larger, then for example you could fit a penalized regression model using all the predictors. If your dataset does not have many predictors you could consider models that include non-linear transformations, interaction terms, and/or local smoothing to increase the effective degrees of freedom.
-
 The high-dimensional model was a Random Forest classifier built to predict binary amphetamine use (use vs. no use). We first applied oversampling to the minority class in the training data to mitigate class imbalance. After tuning the number of variables tried at each split (mtry ∈ {2, 3, 4}) via 5-fold cross-validation, the final forest attained 73.4% accuracy on the held-out test set.
 
 Examining the MeanDecreaseGini importances from the fitted forest, we found that other substance-use measures are the strongest predictors of amphetamine consumption. Cannabis_level was by far the top signal, followed by nicotine_level. Among personality dimensions, openness (oscore), conscientiousness (cscore) and neuroticism (nscore) emerged next in importance. Sensation-seeking (ss) and extraversion (escore) also contributed substantially, with agreeableness (ascore) trailing closely. Demographic features such as education, age and country had smaller—but still noticeable—effects. Together, these results suggest that patterns of other drug use, particularly cannabis and nicotine.
@@ -617,195 +614,110 @@ varImpPlot(rf_eng)
 
 ### 5. Predictive model: XGB
 
-## code using tidymodels
+**5.1 Build Logistic regression model:**
 
 ```{r}
-# basic recipe
-xgb_recipe <- recipe(amphet_use ~ ., data = train_data2) %>%
-  step_dummy(all_nominal_predictors())
+recipe <- recipe(amphet_use ~ ., data = train_data2)
+cv <- vfold_cv(train_data2, v = 10, strata = amphet_use)
 
-# model specification
-xgb_spec <- boost_tree(
-  mode = "classification",
-  trees = tune(),              # nrounds
-  tree_depth = tune(),         # max_depth
-  learn_rate = tune(),         # eta
-  loss_reduction = tune(),     # gamma
-  sample_size = tune(),        # subsample
-  mtry = tune(),               # colsample_bytree
-  min_n = tune()               # min_child_weight
+boost <- boost_tree(
+  trees = tune(),
+  learn_rate = tune(),
+  tree_depth = tune(),
+  loss_reduction = tune(),   
+  min_n = tune(),           
+  sample_size = tune(), 
+  mtry = tune()
 ) %>%
-  set_engine("xgboost")
+  set_mode("classification") %>%
+  set_engine("xgboost", objective = "binary:logistic")
 
-# workflow
-xgb_workflow <- workflow() %>%
-  add_recipe(xgb_recipe) %>%
-  add_model(xgb_spec)
+workflow_boost <- workflow() %>%  
+  add_recipe(recipe) %>%
+  add_model(boost)
+```
 
-# cross-validation folds
-set.seed(123)
-cv_folds <- vfold_cv(train_data2, v = 10)
+**5.2 Fit xgb with CV on training data:**
 
-n_predictors <- ncol(train_data2) - 1
-library(dials)
-xgb_grid <- grid_latin_hypercube(
-  trees(range = c(50, 200)),
-  tree_depth(range = c(3, 10)),
-  learn_rate(range = c(0.01, 0.3)),
-  loss_reduction(range = c(0, 5)),
-  sample_size(range = c(0.5, 1)),
-  mtry(range = c(1, n_predictors)),
-  min_n(range = c(1, 10)),
-  size = 20
+```{r}
+fit_boost  <- tune_grid(  
+  workflow_boost,  
+  cv,  
+  metrics = metric_set(roc_auc) 
+  ) 
+```
+
+
+**5.3 Fit best boosted tree model:**
+
+```{r}
+boost_best <- fit_boost %>%  
+  select_best() # best tuning parameters
+
+boost_final <- finalize_model(    
+  boost,    
+  boost_best
+  ) 
+
+boost_final
+```
+
+**5.4: Test best boosted tree model:**
+
+```{r}
+final_fit <- workflow_boost %>%
+  update_model(boost_final) %>%
+  fit(data = train_data2)
+
+preds <- predict(final_fit, new_data = test_data2, type = "class") %>%
+  bind_cols(test_data2 %>% select(amphet_use))
+
+metrics(preds, truth = amphet_use, estimate = .pred_class)
+```
+
+**5.5: XGB accuracy**
+
+```{r}
+pred_train <- predict(final_fit, train_data2) %>% pull(.pred_class)
+pred_test  <- predict(final_fit, test_data2)  %>% pull(.pred_class)
+
+xgb_train_acc <- mean(pred_train == train_data2$amphet_use)
+xgb_test_acc  <- mean(pred_test  == test_data2$amphet_use)
+
+cat("XGB Accuracy (Train):", round(xgb_train_acc,3), "\n")
+cat("XGB Accuracy (Test) :", round(xgb_test_acc,3), "\n")
+```
+
+**5.6: XGB Confusion Matrix:**
+
+```{r}
+conf_mat_test <- conf_mat(
+  tibble(truth = test_data2$amphet_use, prediction = pred_test),
+  truth = truth,
+  estimate = prediction
 )
 
-xgb_grid <- as_tibble(xgb_grid)
-
-# tune the grid
-set.seed(38036)
-xgb_tune_results <- tune_grid(
-  xgb_workflow,
-  resamples = cv_folds,
-  grid = xgb_grid,
-  metrics = metric_set(roc_auc)
-)
-
-# get best hyperparameters
-best_xgb <- select_best(xgb_tune_results, metric= "roc_auc")
-
-# finalize workflow with best parameters
-final_xgb_workflow <- finalize_workflow(xgb_workflow, best_xgb)
-
-# fit final model to all training data
-final_xgb_fit <- fit(final_xgb_workflow, data = train_data2)
+conf_mat_test
 ```
+The confusion matrix indicates that the XGBoost model successfully identified most true positives and true negatives. However, both the false negative and false positive rates remain non-negligible, suggesting room for improvement in classification precision and recall.
 
-## Prepare data:
+
+**5.7: ROC:**
 
 ```{r}
-train_data2$amphet_use <- factor(train_data2$amphet_use, levels = c(0, 1), labels = c("no", "yes"))
-test_data2$amphet_use  <- factor(test_data2$amphet_use,  levels = c(0, 1), labels = c("no", "yes"))
+pred_probs <- predict(final_fit, new_data = test_data2, type = "prob") %>%
+  bind_cols(test_data2 %>% select(amphet_use))
 
-X_train <- train_data2[, setdiff(names(train_data2), "amphet_use")]
-X_test <- test_data2[, setdiff(names(test_data2), "amphet_use")]
-y_train <- train_data2$amphet_use
-y_test  <- test_data2$amphet_use
+roc_data <- roc_curve(pred_probs, truth = amphet_use, .pred_0) 
+autoplot(roc_data)
+
+xgb_auc <- roc_auc(pred_probs, truth = amphet_use, .pred_0)
+xgb_auc
 ```
 
-## Define train control:
+The final XBGoost model yielded a test accuracy of 73.9% and a train accuracy of 76.5%. While resulting in a higher predictive accuracy, XGB is generally less intepretable than the other models. To achieve a higher predictive accuracy, we implemented a 10-fold stratified cross-validation to ensure that performance estimates were reliable and preserved the class balance of the amphet_use variable. We further tuned hyperparameters such as the number of trees, learning rate, and tree depth using automated optimization to find the best configuration. Together, these components allowed the XGBoost model to effectively capture complex non-linear relationships and interactions in the data, leading to a high predictive accuracy.
 
-```{r}
-ctrl <- trainControl(
-  method = "cv",      
-  number = 5,
-  verboseIter = TRUE,
-  classProbs = TRUE,   
-  summaryFunction = twoClassSummary
-)
-```
-
-## Parameter grid:
-
-```{r}
-grid <- expand.grid(
-  nrounds = c(50, 100),
-  max_depth = c(3, 6, 9),
-  eta = c(0.01, 0.1, 0.3),
-  gamma = 0,
-  colsample_bytree = c(0.7, 1),
-  min_child_weight = 1,
-  subsample = c(0.7, 1)
-)
-```
-
-## XGB model:
-
-```{r}
-set.seed(38036)
-
-xgb_caret <- train(
-  x = X_train,
-  y = y_train,
-  method = "xgbTree",
-  trControl = ctrl,
-  tuneGrid = grid,
-  metric = "ROC"
-)
-```
-
-```{r}
-print(xgb_caret$bestTune)
-plot(xgb_caret)
-```
-
-## Accuracy using tidymodels:
-
-```{r}
-# Predict probabilities on training data
-pred_class_train <- predict(final_xgb_fit, new_data = train_data2, type = "class")$.pred_class
-train_acc <- mean(pred_class_train == train_data2$amphet_use)
-cat("XGBoost Training Accuracy:", round(train_acc, 3), "\n")
-
-# Predict probabilities on test data
-pred_class_test <- predict(final_xgb_fit, new_data = test_data2, type = "class")$.pred_class
-test_acc <- mean(pred_class_test == test_data2$amphet_use)
-cat("XGBoost Test Accuracy:", round(test_acc, 3), "\n")
-
-```
-
-## Accuracy:
-
-```{r}
-# Predict probabilities on test data
-xgb_pred_probs_test <- predict(xgb_caret, newdata = test_data2, type = "prob")[, "yes"]
-xgb_pred_class_test <- ifelse(xgb_pred_probs_test > 0.5, "yes", "no")
-xgb_test_accuracy <- mean(xgb_pred_class_test == test_data2$amphet_use)
-cat("XGBoost Test Accuracy:", round(xgb_test_accuracy, 3), "\n")
-
-# Predict probabilities on training data
-xgb_pred_probs_train <- predict(xgb_caret, newdata = train_data2, type = "prob")[, "yes"]
-xgb_pred_class_train <- ifelse(xgb_pred_probs_train > 0.5, "yes", "no")
-xgb_train_accuracy <- mean(xgb_pred_class_train == train_data2$amphet_use)
-cat("XGBoost Training Accuracy:", round(xgb_train_accuracy, 3), "\n")
-```
-
-## Confusion matrix:
-
-```{r}
-cm <- confusionMatrix(factor(xgb_pred_class_test, levels = c("no", "yes")), 
-                      factor(y_test, levels = c("no", "yes")), 
-                      positive = "yes")
-print(cm)
-
-# Convert to dataframe for ggplot
-cm_table <- as.data.frame(cm$table)
-colnames(cm_table) <- c("Predicted", "Actual", "Freq")
-
-ggplot(data = cm_table, aes(x = Actual, y = Predicted, fill = Freq)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = Freq), size = 6) +
-  scale_fill_gradient(low = "white", high = "steelblue") +
-  labs(title = "XGBoost Confusion Matrix", x = "Actual", y = "Predicted") +
-  theme_minimal()
-```
-
-## ROC:
-
-```{r}
-true_labels <- as.numeric(test_data2$amphet_use == "yes") # 1 for "yes", 0 for "no"
-
-# ROC analysis
-xgb_roc_obj <- roc(response = true_labels, predictor = xgb_pred_probs_test)
-
-# Print AUC
-xgb_auc <- auc(xgb_roc_obj)
-print(xgb_auc)
-
-# Plot ROC curve
-plot(xgb_roc_obj, main = "XGBoost ROC Curve", col = "red")
-```
-
-# Summary of model performance
+## Summary of model performance
 
 ```{r}
 model_names <- c("Logistic Regression", "SGD", "Lasso Regression" , "Random Forest", "XGBoost")
@@ -818,10 +730,12 @@ summary_table <- data.frame(
   Accuracy = accuracy,
   AUC = auc
 )
-
-# View the table
 print(summary_table)
 ```
+
+## Analysis
+
+Our five distinct models predict amphetamine use based on demographic, psychological, and behavioural variables. Our logistic regression identified age, gender, and sensation-seeking as significant predictors, achieving 70% accuracy. Our custom stochastic gradient descent (SGD) model demonstrated slightly better accuracy (72.6%). The Lasso regression provided interpretability by shrinking less important predictors towards zero, identifying cannabis, nicotine, and age as key predictors. Its performance was similar to logistic regression, with an accuracy of 70.2%. The Random Forest model achieved higher accuracy (73.4%) and highlighted cannabis and nicotine consumption as the most critical predictors, along with key personality traits (openness, conscientiousness, and neuroticism). Finally, the XGBoost model attained strong predictive accuracy(74%) and interpretability, slightly outperforming previous models. Overall, these models collectively suggest that substance use patterns, especially cannabis and nicotine, along with personality and demographic factors, might be able to predict amphetamine usage.
 
 ### Reference
 
