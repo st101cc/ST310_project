@@ -620,6 +620,14 @@ print(importance(rf_eng))
 varImpPlot(rf_eng)
 ```
 
+```{r}
+rf_probs <- predict(rf_final, new_data = test_data2, type = "prob") %>%
+  bind_cols(test_data2 %>% select(amphet_use))
+
+rf_auc <- roc_auc(rf_probs, truth = amphet_use, .pred_1)
+print(rf_auc)
+```
+
 ### 5. Predictive model: XGB
 
 **5.1 Build Logistic regression model:**
