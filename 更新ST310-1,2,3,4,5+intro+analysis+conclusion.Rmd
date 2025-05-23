@@ -33,6 +33,7 @@ Respondents also reported their usage patterns across 18 legal and illegal subst
 Load libraries:
 
 ```{r}
+suppressPackageStartupMessages({
 library(caret)
 library(ggplot2)
 library(xgboost)
@@ -47,6 +48,7 @@ library(pROC)
 library(lightgbm)
 library(ROSE)
 library(tibble)
+})
 ```
 
 Load data:
