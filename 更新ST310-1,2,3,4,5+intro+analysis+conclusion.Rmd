@@ -1,6 +1,6 @@
 ---
 title: "ST310 Project"
-date: "2025-04-11"
+date: "2025-06-03"
 output: html_document
 ---
 
@@ -52,8 +52,8 @@ library(tibble)
 Load data:
 
 ```{r}
-#data <- read.csv("data/drug_consumption.csv")
-data <- read.csv("~/Desktop/ST310 Machine Learning/project/drug_consumption.csv")
+data <- read.csv("data/drug_consumption.csv")
+#data <- read.csv("~/Desktop/ST310 Machine Learning/project/drug_consumption.csv")
 
 # Keep only selected drug variables along with the original features
 selected_vars <- c("age", "gender", "education", "country", "ethnicity", "nscore", 
@@ -622,6 +622,14 @@ print(importance(rf_eng))
 varImpPlot(rf_eng)
 ```
 
+```{r}
+rf_probs <- predict(rf_final, new_data = test_data2, type = "prob") %>%
+  bind_cols(test_data2 %>% select(amphet_use))
+
+rf_auc <- roc_auc(rf_probs, truth = amphet_use, .pred_0)
+print(rf_auc)
+```
+
 ### **3.**5 Predictive model: XGB
 
 **3.5.1 Build Logistic regression model:**
@@ -656,7 +664,6 @@ fit_boost  <- tune_grid(
   metrics = metric_set(roc_auc) 
   ) 
 ```
-
 
 **3.5.3 Fit best boosted tree model:**
 
@@ -725,16 +732,22 @@ xgb_auc <- roc_auc(pred_probs, truth = amphet_use, .pred_0)
 xgb_auc
 ```
 
-The final XBGoost model yielded a test accuracy of 73.9% and a train accuracy of 76.5%. While resulting in a higher predictive accuracy, XGB is generally less intepretable than the other models. To achieve a higher predictive accuracy, we implemented a 10-fold stratified cross-validation to ensure that performance estimates were reliable and preserved the class balance of the amphet_use variable. We further tuned hyperparameters such as the number of trees, learning rate, and tree depth using automated optimization to find the best configuration. Together, these components allowed the XGBoost model to effectively capture complex non-linear relationships and interactions in the data, leading to a high predictive accuracy.
+The final XBGoost model yielded a test accuracy of 74.2% and a train accuracy of 81.2%. While resulting in a higher predictive accuracy, XGB is generally less intepretable than the other models. To achieve a higher predictive accuracy, we implemented a 10-fold stratified cross-validation to ensure that performance estimates were reliable and preserved the class balance of the amphet_use variable. We further tuned hyperparameters such as the number of trees, learning rate, and tree depth using automated optimization to find the best configuration. Together, these components allowed the XGBoost model to effectively capture complex non-linear relationships and interactions in the data, leading to a high predictive accuracy.
 
 ## 4. Model Comparisons
 
 **Summary of model performance:**
 
 ```{r}
+log_auc_val   <- as.numeric(log_auc)
+sgd_auc_val   <- as.numeric(SGD_auc)
+lasso_auc_val <- as.numeric(lasso_auc)
+rf_auc_val    <- rf_auc$.estimate
+xgb_auc_val   <- xgb_auc$.estimate
+
 model_names <- c("Logistic Regression", "SGD", "Lasso Regression" , "Random Forest", "XGBoost")
 accuracy <- c(base_test_accuracy, SGD_accuracy_test, lasso_test_acc, rf_test_acc, xgb_test_acc)
-auc <- c(log_auc, SGD_auc, lasso_auc, rf_auc, xgb_auc)
+auc <- c(log_auc_val, sgd_auc_val, lasso_auc_val, rf_auc_val, xgb_auc_val)
 
 # Create a data frame
 summary_table <- data.frame(
@@ -745,7 +758,9 @@ summary_table <- data.frame(
 print(summary_table)
 ```
 
-Our five distinct models predict amphetamine use based on demographic, psychological, and behavioural variables. Our logistic regression identified age, gender, and sensation-seeking as significant predictors, achieving 70% accuracy. Our custom stochastic gradient descent (SGD) model demonstrated slightly better accuracy (72.9%). The Lasso regression provided interpretability by shrinking less important predictors towards zero, identifying cannabis, nicotine, and age as key predictors. Its performance was similar to logistic regression, with an accuracy of 70.2%. The Random Forest model achieved higher accuracy (73.4%) and highlighted cannabis and nicotine consumption as the most critical predictors, along with key personality traits (openness, conscientiousness, and neuroticism). Finally, the XGBoost model attained strong predictive accuracy(74%) and interpretability, slightly outperforming previous models. Overall, these models collectively suggest that substance use patterns, especially cannabis and nicotine, along with personality and demographic factors, might be able to predict amphetamine usage.
+Our five models predict amphetamine use based on demographic, psychological, and behavioural variables. Our logistic regression identified age, gender, and sensation-seeking as significant predictors, achieving 70% accuracy. Our custom stochastic gradient descent (SGD) model demonstrated slightly better accuracy (72.9%). The Lasso regression provided interpretability by shrinking less important predictors towards zero, identifying cannabis, nicotine, and age as key predictors. Its performance was similar to logistic regression, with an accuracy of 70.2%. The Random Forest model achieved higher accuracy (73.4%) and highlighted cannabis and nicotine consumption as the most critical predictors, along with key personality traits (openness, conscientiousness, and neuroticism). Finally, the XGBoost model attained strong predictive accuracy(74.2%) and interpretability, slightly outperforming previous models.
+
+All models demonstrated a reasonable AUC value of around 0.80, indicating that the models have an 80% chance of assigning a higher predicted probability to non-amphetamine users than to users. Overall, these models suggest that substance use patterns, especially cannabis and nicotine, along with personality and demographic factors, might be able to predict amphetamine usage.
 
 ## 5. Conclusion
 
