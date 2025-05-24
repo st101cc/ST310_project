@@ -1,7 +1,9 @@
 ---
 title: "ST310 Project"
 date: "2025-06-03"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup1, include=FALSE}
@@ -20,7 +22,7 @@ In addition to the misuse of illegal drugs, the non-medical use of prescription 
 
 This project aims to use machine learning methods to predict the usage of amphetamine (*amphet_use*) based on a series of psychological, demographic, and behavioral variables. For demographic factors, we include age (*age*), gender (*gender*), education level (*education*), country of residence (*country*), and ethnicity (*ethnicity*). Psychological factors cover personality traits such as neuroticism (*nscore*), extraversion (*escore*), openness (*oscore*), agreeableness (*ascore*), conscientiousness (*cscore*), impulsivity (*impulsive*), and sensation-seeking (*ss*). Behavioral factors include consumption levels of other drugs: alcohol (*alcohol_level*), chocolate (*choc_level*), cannabis (*cannabis_level*), caffeine (*caff_level*), and nicotine (*nicotine_level*). Instead of including every drug variables from the original dataset, we selected these drugs due to their widespread use or relatively lower risk, which may help reveal broader patterns of drug consumption associated with amphetamine use. By identifying the key predictors of amphetamine use, the findings from this analysis can contribute to better strategies for prevention and early intervention.
 
-![*Figure 1: The 10 most addictive drugs*](ST310%20Machine%20Learning/drug.png){width="333"}
+![*Figure 1: The 10 most addictive drugs*](top10.jpg){width="333"}
 
 ## 2. Dataset
 
@@ -540,7 +542,7 @@ autoplot(roc_df) +
 
 ### **3.**4 High Dimensional Model: Random Forest
 
-The high-dimensional model was a Random Forest classifier built to predict binary amphetamine use (use vs. no use). We first applied oversampling to the minority class in the training data to mitigate class imbalance. After tuning the number of variables tried at each split (mtry ∈ {2, 3, 4}) via 5-fold cross-validation, the final forest attained 73.4% accuracy on the held-out test set.
+The high-dimensional model was a Random Forest classifier built to predict binary amphetamine use (use vs. no use). We first applied oversampling to the minority class in the training data to mitigate class imbalance. After tuning the number of variables tried at each split (mtry in {2, 3, 4}) via 5-fold cross-validation, the final forest attained 73.7% accuracy on the held-out test set.
 
 Examining the MeanDecreaseGini importances from the fitted forest, we found that other substance-use measures are the strongest predictors of amphetamine consumption. Cannabis_level was by far the top signal, followed by nicotine_level. Among personality dimensions, openness (oscore), conscientiousness (cscore) and neuroticism (nscore) emerged next in importance. Sensation-seeking (ss) and extraversion (escore) also contributed substantially, with agreeableness (ascore) trailing closely. Demographic features such as education, age and country had smaller—but still noticeable—effects. Together, these results suggest that patterns of other drug use, particularly cannabis and nicotine.
 
@@ -760,7 +762,7 @@ summary_table <- data.frame(
 print(summary_table)
 ```
 
-Our five models predict amphetamine use based on demographic, psychological, and behavioural variables. Our logistic regression identified age, gender, and sensation-seeking as significant predictors, achieving 70% accuracy. Our custom stochastic gradient descent (SGD) model demonstrated slightly better accuracy (72.9%). The Lasso regression provided interpretability by shrinking less important predictors towards zero, identifying cannabis, nicotine, and age as key predictors. Its performance was similar to logistic regression, with an accuracy of 70.2%. The Random Forest model achieved higher accuracy (73.4%) and highlighted cannabis and nicotine consumption as the most critical predictors, along with key personality traits (openness, conscientiousness, and neuroticism). Finally, the XGBoost model attained strong predictive accuracy(74.2%) and interpretability, slightly outperforming previous models.
+Our five models predict amphetamine use based on demographic, psychological, and behavioural variables. Our logistic regression identified age, gender, and sensation-seeking as significant predictors, achieving 70% accuracy. Our custom stochastic gradient descent (SGD) model demonstrated slightly better accuracy (72.9%). The Lasso regression provided interpretability by shrinking less important predictors towards zero, identifying cannabis, nicotine, and age as key predictors. Its performance was similar to logistic regression, with an accuracy of 70.2%. The Random Forest model achieved higher accuracy (73.7%) and highlighted cannabis and nicotine consumption as the most critical predictors, along with key personality traits (openness, conscientiousness, and neuroticism). Finally, the XGBoost model attained strong predictive accuracy(74.2%) and interpretability, slightly outperforming previous models.
 
 All models demonstrated a reasonable AUC value of around 0.80, indicating that the models have an 80% chance of assigning a higher predicted probability to non-amphetamine users than to users. Overall, these models suggest that substance use patterns, especially cannabis and nicotine, along with personality and demographic factors, might be able to predict amphetamine usage.
 
